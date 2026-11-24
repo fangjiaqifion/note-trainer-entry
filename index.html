@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Note Trainer · 云端授权</title>
+<style>body{font:1rem system-ui;margin:2rem auto;max-width:34rem;padding:0 1rem}fieldset{margin:1rem 0}label{display:block;margin:.5rem 0}input,textarea{display:block;width:100%;box-sizing:border-box}button,a{margin:.4rem 0}textarea{min-height:5rem}</style>
+<script type="module" src="./entry.mjs?build=4fd09d5452"></script></head>
+<body><main><h1>识谱小练习</h1><p id="status" role="status"></p>
+<form id="login"><fieldset><legend>教师登录</legend><label>用户名<input name="username" required></label><label>教师密钥<input name="key" type="password" required></label><button>登录</button></fieldset></form>
+<form id="register"><fieldset><legend>教师注册</legend><label>邀请码<input name="invitation" type="password" required></label><label>用户名<input name="username" required></label><button>注册</button></fieldset></form>
+<section id="issued" hidden><p>请保存教师密钥。换设备时需要它。</p><textarea id="key" readonly aria-label="教师密钥"></textarea><button id="continue">已保存，进入练习</button></section>
+<form id="learner"><fieldset><legend>学生激活或恢复</legend><label>学生激活码<textarea name="packet" required></textarea></label><button>激活或恢复</button></fieldset></form>
+<a href="./manage.html">管理员登录</a>
+</main></body></html>

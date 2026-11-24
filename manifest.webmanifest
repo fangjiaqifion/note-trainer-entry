@@ -1,0 +1,15 @@
+{
+  "name": "识谱小练习",
+  "short_name": "识谱",
+  "description": "识谱小练习：音名与键盘位置、五线谱、时值、指法、线与间、两个音、加线加间、易混音，按进度加入新音",
+  "lang": "zh-CN",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#FFF7EC",
+  "theme_color": "#FFF7EC",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

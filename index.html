@@ -3,14 +3,14 @@
 <meta name="robots" content="noindex,nofollow,noarchive"><meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#f6f3ed">
 <title>Note Trainer · 云端授权</title>
-<link rel="stylesheet" href="./portal_style.css?v=421621bae5">
-<script type="module" src="./entry.mjs?build=5525ddec9a&amp;rev=75fa79ad47"></script></head>
+<link rel="stylesheet" href="./portal_style.css?v=f605a20340">
+<script type="module" src="./entry.mjs?build=fcc45ea7c3&amp;rev=7e9bcd50de"></script></head>
 <body><main class="entry">
 <header><h1>识谱小练习</h1></header>
 <p id="status" role="status" aria-live="polite">正在加载登录…</p>
 <div class="entry-grid">
 <section class="card issued" id="issued" hidden><h2>保存教师密钥</h2><p>换设备时需要它。</p><textarea id="key" readonly aria-label="教师密钥"></textarea><button id="continue">已保存，进入练习</button></section>
-<form id="login"><h2>教师登录</h2><div><label>用户名<input id="teacherUsername" autocomplete="username" autocapitalize="none" required></label><label>教师密钥<input id="teacherKeyInput" type="password" autocomplete="current-password" required></label></div><button disabled>登录</button></form>
+<form id="login"><h2>教师登录</h2><div><label>用户名<input id="teacherUsername" autocomplete="username" autocapitalize="none" maxlength="32" aria-describedby="teacherLoginHint"></label><label>教师密钥<input id="teacherKeyInput" type="password" autocomplete="current-password" required></label><p class="entry-hint" id="teacherLoginHint">使用旧版教师恢复码时，用户名可留空。</p></div><button disabled>登录</button></form>
 <form id="learner"><h2>学生激活或添加设备</h2><div><p class="entry-hint">首次使用请向老师领取激活码。添加设备时，请在原设备生成配对码。</p><label>激活码或配对码<textarea id="learnerCode" autocomplete="off" autocapitalize="none" spellcheck="false" required></textarea></label></div><button disabled>进入练习</button></form>
 </div>
 <details class="entry-registration">

@@ -39,6 +39,7 @@ textarea { min-height: 76px; }
 .entry-footer { border-top: 1px solid var(--line); margin: 14px 0 0; }
 .entry-footer a { display: inline-flex; align-items: center; min-height: 44px; color: var(--muted); font-size: 14px; text-underline-offset: 4px; }
 .entry #status { margin: 0 0 16px; color: var(--muted); overflow-wrap: anywhere; }
+.entry form #status, .entry .issued #status { margin: 12px 0 0; align-self: start; }
 .entry #status:empty { display: none; }
 @media (max-width: 600px) {
   .entry { margin-top: 20px; padding: 0 12px; }

@@ -1,6 +1,6 @@
-import {createCloudClient,randomCode} from './cloud_client.mjs?build=5525ddec9a';
-import {parseInvitation,teacherKey,username} from './portal_identity.mjs?build=5525ddec9a';
-import {portalConfig} from './portal_config.mjs?build=5525ddec9a';
+import {createCloudClient,randomCode} from './cloud_client.mjs?build=fcc45ea7c3';
+import {parseInvitation,teacherKey,username} from './portal_identity.mjs?build=fcc45ea7c3';
+import {portalConfig} from './portal_config.mjs?build=fcc45ea7c3';
 
 const status=document.querySelector('#status');
 const client=createCloudClient({storage:localStorage});
@@ -9,9 +9,10 @@ const issued=document.querySelector('#issued');
 const entryBuild=new URL(import.meta.url).searchParams.get('build');
 let busy=false;
 
-async function action(work){
+async function action(work,section){
  if(busy)return;
  busy=true;
+ if(section)section.append(status);
  const buttons=document.querySelectorAll('button');
  for(const button of buttons)button.disabled=true;
  try{status.textContent='正在验证云端授权…';await work();}
@@ -23,6 +24,7 @@ function showKey(pending){
  const key=document.querySelector('#key');
  key.value=teacherKey(pending.secret);
  issued.hidden=false;
+ issued.append(status);
  status.textContent='教师账户已开通。';
  key.focus();
 }
@@ -48,7 +50,7 @@ function bind(id,handler){
  form.addEventListener('submit',event=>{
   event.preventDefault();
   // Unnamed controls keep credentials out of native form submissions.
-  action(()=>handler(form.elements));
+  action(()=>handler(form.elements),form);
  });
  form.querySelector('button').disabled=false;
 }
@@ -57,7 +59,11 @@ bind('login',async fields=>{
  client.configure(portalConfig);
  const key=fields.namedItem('teacherKeyInput').value.trim();
  if(key.startsWith('nt1.'))await client.recover(key,null,'teacher');
- else await client.loginTeacher(fields.namedItem('teacherUsername').value,key);
+ else{
+  const field=fields.namedItem('teacherUsername');
+  if(!field.value.trim()){field.focus();throw Error('请输入教师用户名。');}
+  await client.loginTeacher(field.value,key);
+ }
  await launch();
 });
 bind('register',async fields=>{

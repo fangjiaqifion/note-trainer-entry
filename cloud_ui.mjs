@@ -9,6 +9,8 @@ export function mountCloudUI(host){
  const client=createCloudClient({storage:localStorage,syncScope});
  let timer,scheduledAt=Infinity,retryAt=0,lastActivity=0;
  let active=false,paused=false,attempt=0,saveVersion=0,managing=false,disposed=false,releaseLock,hasLock=false;
+ let initialRoster=null,historyAfter=null;
+ const pendingProfiles=new Set();
  const dialog=document.createElement('div');dialog.className='modal';dialog.id='cloudModal';
  dialog.innerHTML=`<div class="sheet"><h2 id="cloudTitle">云端账户</h2>
  <p class="hint" id="cloudIntro">教师使用用户名和教师密钥登录。首次使用请先注册。</p>
@@ -183,51 +185,65 @@ export function mountCloudUI(host){
   profileRetries.set(id,{tries,until:Date.now()+delay});
  }
  function waiting(id){return (profileRetries.get(id)?.until||0)>Date.now();}
- async function pullProfile(head,local,fetched){
+ async function pullProfile(head,local,fetched,readHistory){
   const stored=local&&host.storedState(local.id);
   const meta=client.meta(head.id);
   const cursor=stored?(meta.eventCursor||'0'):'0';
   const stateChanged=!stored||meta.revision!==head.revision||meta.lastState===undefined;
   const historyChanged=cursor!==head.event_cursor;
   if(!stateChanged&&!historyChanged)return 'unchanged';
-  if(local&&!host.canApplyCloudProfile(local.id))return stateChanged?'deferred':'unchanged';
+  if(!stateChanged&&!readHistory)return 'more';
+  if(local&&!host.canApplyCloudProfile(local.id))return 'deferred';
   const before=local&&host.readState(local.id);
   const memory=local&&host.memoryToken(local.id);
   const base=JSON.parse(meta.lastState||'{}');
   if(stateChanged&&!fetched)throw Error('学生档案暂不可读');
   const remote=stateChanged?{...head,...fetched}:{...head,state:base};
-  const page=historyChanged?await client.readEventPage(head.id,cursor,head.event_cursor):null;
+  const page=historyChanged&&readHistory?await client.readEventPage(head.id,cursor,head.event_cursor):null;
   if(!host.runtimeActive())return 'deferred';
   const events=page?.events||[];
   const profile=before?{...remote,state:reconcileProfile(base,before,remote.state,events)}:remote;
   const applied=host.applyCloudProfile(profile,profile.state.events||events,local?.id,before,memory);
   if(!applied)return 'deferred';
-  client.markPulled(head.id,{...remote,event_cursor:page?.cursor||head.event_cursor},events,before||remote.revision?remote.state:applied);
-  return page?.more?'more':'applied';
+  client.markPulled(head.id,{...remote,event_cursor:page?.cursor||cursor},events,before||remote.revision?remote.state:applied);
+  return historyChanged&&(!page||page.more)?'more':'applied';
  }
  async function refreshProfiles({rosterOnly=false}={}){
   const access=client.access;
   const deferred=new Set();
   if(!access||!host.runtimeActive?.()||document.hidden||!navigator.onLine)return deferred;
-  const roster=await client.syncHeads();
+  const roster=!rosterOnly&&initialRoster ? initialRoster : await client.syncHeads();
+  initialRoster=rosterOnly ? roster : null;
   if(!host.runtimeActive())return deferred;
-  host.updateCloudRoster(roster);
-  if(rosterOnly)return deferred;
   const known=new Set(roster.map(row=>row.id));
   const accounts=host.accounts();
   const byStudent=new Map(accounts.map(account=>[account.cloudStudent,account]));
   const pendingKeys=new Set(accounts.filter(account=>canAutoEnroll(access,account)).map(account=>account.id));
   for(const id of profileRetries.keys())if(!known.has(id)&&!pendingKeys.has(id))profileRetries.delete(id);
   const candidates=roster.filter(head=>canSyncAccount(access,{cloudStudent:head.id,cloudWorkspace:head.workspace_id})&&!pendingKeys.has(head.local_id));
-  const changedState=candidates.filter(head=>{
+  const work=candidates.flatMap(head=>{
    const local=byStudent.get(head.id);
-   if(waiting(head.id)||(local&&!host.canApplyCloudProfile(local.id)))return false;
+   const stored=local&&host.storedState(local.id);
    const meta=client.meta(head.id);
-   return meta.revision!==head.revision||meta.lastState===undefined||!local||!host.storedState(local.id);
+   const state=!stored||meta.revision!==head.revision||meta.lastState===undefined;
+   const history=(stored?(meta.eventCursor||'0'):'0')!==head.event_cursor;
+   return state||history?[{head,state,history}]:[];
   });
+  const previous=new Set(pendingProfiles);
+  pendingProfiles.clear();
+  for(const {head} of work)pendingProfiles.add(head.id);
+  host.updateCloudRoster(roster);
+  if(rosterOnly)return deferred;
+  // Resolve local IDs again because the head response can add roster entries.
+  for(const account of host.accounts())byStudent.set(account.cloudStudent,account);
+  const eligible=work.filter(({head})=>{
+   const local=byStudent.get(head.id);
+   return !waiting(head.id)&&(!local||host.canApplyCloudProfile(local.id));
+  });
+  const changedState=eligible.filter(item=>item.state);
   const fetched=new Map();
-  for(let i=0;i<changedState.length&&host.runtimeActive();i+=20){
-   const ids=changedState.slice(i,i+20).map(head=>head.id);
+  if(changedState.length&&host.runtimeActive()){
+   const ids=changedState.slice(0,20).map(({head})=>head.id);
    try{
     for(const [id,profile] of await client.profileStates(ids))fetched.set(id,profile);
    }catch(error){
@@ -235,21 +251,33 @@ export function mountCloudUI(host){
     for(const id of ids)delayProfile(id,error);
    }
   }
-  let changed=false,more=false;
-  for(const head of candidates){
+  const ready=eligible.filter(({head,state})=>!waiting(head.id)&&(!state||fetched.has(head.id)));
+  for(const {head} of changedState.slice(0,20)){
+   if(!waiting(head.id)&&!fetched.has(head.id))delayProfile(head.id,Error('学生档案暂不可读'));
+  }
+  // Rotate history work across students so one long history cannot hold up the class.
+  const history=ready.filter(item=>item.history);
+  const start=history.findIndex(({head})=>head.id===historyAfter)+1;
+  const historyBatch=history.slice(start).concat(history.slice(0,start)).slice(0,4);
+  let changed=false,more=changedState.length>20||history.length>historyBatch.length;
+  const readsHistory=new Set(historyBatch.map(({head})=>head.id));
+  const applyWork=ready.filter(item=>!item.history||item.state&&!readsHistory.has(item.head.id)).concat(historyBatch);
+  for(const {head,state} of applyWork){
    if(!host.runtimeActive())break;
-   if(waiting(head.id)){deferred.add(head.id);continue;}
+   const readHistory=readsHistory.has(head.id);
+   if(readHistory)historyAfter=head.id;
    try{
-    const result=await pullProfile(head,byStudent.get(head.id),fetched.get(head.id));
-    if(result==='deferred'||result==='more')deferred.add(head.id);
-    if(result==='applied'||result==='more')changed=true;
+    const result=await pullProfile(head,byStudent.get(head.id),fetched.get(head.id),readHistory);
+    if(result==='unchanged'||result==='applied')pendingProfiles.delete(head.id);
+    if(result==='applied'||result==='more'&&(state||readHistory))changed=true;
     if(result==='more')more=true;
    }catch(error){
     if(error.status===429||error.retryAfter)throw error;
     delayProfile(head.id,error);deferred.add(head.id);
    }
   }
-  if(changed&&host.runtimeActive())host.refreshClassroom();
+  for(const id of pendingProfiles)deferred.add(id);
+  if(host.runtimeActive()&&(changed||previous.size!==pendingProfiles.size||[...previous].some(id=>!pendingProfiles.has(id))))host.refreshClassroom();
   if(more)schedule(1500);
   return deferred;
  }
@@ -266,6 +294,7 @@ export function mountCloudUI(host){
   }
   if(account.cloudUnavailable||!canSyncAccount(client.access,account))return 0;
   const token=protectedRuntime?host.storedState(account.id):null;
+  if(answersOnly&&!token)return 0;
   const label=JSON.stringify([account.name,account.color]);
   const clean=cleanAccounts.get(account.id);
   if(token&&clean?.token===token&&clean.label===label)return 0;
@@ -425,6 +454,7 @@ export function mountCloudUI(host){
  if(protectedRuntime)document.addEventListener('visibilitychange',onVisibility);
  async function openStudentCode(student,name){
   if(!protectedRuntime||!host.runtimeActive()||client.access?.role!=='teacher')return;
+  if(managing){host.notify('请等当前操作完成后重试。');return;}
   dialog.classList.add('open');
   showAccess();
   $('cloudTitle').textContent='发激活码';
@@ -437,6 +467,7 @@ export function mountCloudUI(host){
   await action(()=>issue('learner',student));
  }
  async function open(){
+  if(managing){host.notify('请等当前操作完成后重试。');return;}
   if(client.access?.role!=='learner' && client.access && !host.isTeacher()){host.notify('请先从老师入口验证本机 PIN，再打开云端管理');return;}
   dialog.classList.add('open');
   $('cloudPacket').hidden=true;
@@ -457,7 +488,8 @@ export function mountCloudUI(host){
   syncStatus('云端自动同步已开启。离线时先保存在本机。');
   teacherReady();schedule(0);
  }):Promise.resolve();
- return {open,openStudentCode,ready,client,teacherReady,refreshProfiles,prepareRuntime:writer,requestSync:()=>schedule(0),dispose(){
+ return {open,openStudentCode,ready,client,teacherReady,refreshProfiles,prepareRuntime:writer,
+  profilePending:id=>pendingProfiles.has(id),requestSync:()=>schedule(0),dispose(){
   disposed=true;clearSchedule();releaseLock?.();
   window.removeEventListener('nt-local-saved',onSave);window.removeEventListener('nt-roster-saved',onRoster);window.removeEventListener('online',onOnline);
   document.removeEventListener('visibilitychange',onVisibility);

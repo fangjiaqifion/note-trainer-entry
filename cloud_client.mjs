@@ -198,7 +198,8 @@ export function createCloudClient({storage,fetchImpl=fetch,locks=navigator.locks
    cursor=String(row.cursor);
    return {...row.payload,id:row.event_id};
   });
-  return {events,cursor,more:rows.length===500&&(through===undefined||BigInt(cursor)<BigInt(through))};
+  if(through!==undefined&&!events.length)throw Error('云端答题记录尚未载入，请重试');
+  return {events,cursor,more:through===undefined?rows.length===500:BigInt(cursor)<BigInt(through)};
  }
  async function readEvents(id){
   const result=[];

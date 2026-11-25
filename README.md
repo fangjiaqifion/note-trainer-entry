@@ -35,4 +35,5 @@ Updated November 25, 2026.
   activation up front. Account, device, and backup tools are in Advanced Settings.
 - Student information and practice records synchronize automatically across
   authorized devices, with pending answers sent after the connection returns.
-- The previous public entry remains online while the cutover is being verified.
+- The original `note-trainer` Pages site is a historical offline archive.
+  Share the `note-trainer-entry` link above for the current game.

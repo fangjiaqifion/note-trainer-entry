@@ -1,5 +1,5 @@
-import {portalConfig} from './portal_config.mjs?build=14046987a8';
-import {invitationKey} from './portal_identity.mjs?build=14046987a8';
+import {portalConfig} from './portal_config.mjs?build=5525ddec9a';
+import {invitationKey} from './portal_identity.mjs?build=5525ddec9a';
 // Admin tokens and plaintext invitations stay in memory, separate from game storage.
 let session=null,factor=null,data={invites:[],teachers:[]},editing=null,selected=null,filterInvite=null,pending=null,busy=false;
 let classEntitlements=null,backgroundRead=false,actionVersion=0;

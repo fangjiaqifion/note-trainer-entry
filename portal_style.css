@@ -6,7 +6,7 @@
   --surface: #fff;
   --line: #d9dfd4;
   --focus: #b18435;
-  font: 17px "Times New Roman", "Songti SC", serif;
+  font: 17px -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--canvas); color: var(--ink); font: inherit; }

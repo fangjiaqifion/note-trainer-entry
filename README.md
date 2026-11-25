@@ -29,5 +29,10 @@ provided by your teacher or administrator.
 Updated November 25, 2026.
 
 - Cloud authorization is in use at the new entry.
-- Teacher, student, and administrator sign-in use a shared visual style.
+- Sign-in, classroom management, practice screens, results, and settings use a
+  shared visual style.
+- The classroom shows student creation, progress reports, practice, and
+  activation up front. Account, device, and backup tools are in Advanced Settings.
+- Student information and practice records synchronize automatically across
+  authorized devices, with pending answers sent after the connection returns.
 - The previous public entry remains online while the cutover is being verified.

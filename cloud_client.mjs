@@ -182,6 +182,11 @@ export function createCloudClient({storage,fetchImpl=fetch,locks=navigator.locks
   if(!Array.isArray(labels))throw Error('云端学生信息格式不正确');
   return {...rows[0],...(labels.find(l=>l.student_id===id)||{})};
  }
+ async function profileStates(ids){
+  if(!ids.length||ids.length>20||ids.some(id=>!UUID.test(id)))throw Error('学生 ID 无效');
+  const rows=await request('/rest/v1/nt_cloud_students?select=id,state,revision&id=in.('+ids.join(',')+')');
+  return new Map(rows.map(row=>[row.id,row]));
+ }
  async function readEventPage(id,after='0',through){
   if(!UUID.test(id)||!/^\d+$/.test(after)||(through!==undefined&&!/^\d+$/.test(through)))throw Error('学生 ID 或答题游标无效');
   if(through!==undefined&&BigInt(after)>=BigInt(through))return {events:[],cursor:after,more:false};
@@ -206,7 +211,7 @@ export function createCloudClient({storage,fetchImpl=fetch,locks=navigator.locks
   return result;
  }
  return {
-  configure,get access(){return load('access');},get config(){return config;},rpc,recover,issue,students,syncHeads,profile,readEventPage,readEvents,
+  configure,get access(){return load('access');},get config(){return config;},rpc,recover,issue,students,syncHeads,profile,profileStates,readEventPage,readEvents,
   async registerTeacher(invitation,name,secret){
    name=username(name);
    if(!/^[a-f0-9]{48}$/.test(invitation)||!/^[a-f0-9]{64}$/.test(secret))throw Error('注册信息格式不正确');
@@ -262,11 +267,16 @@ export function createCloudClient({storage,fetchImpl=fetch,locks=navigator.locks
   devices(){return rpc('devices',{w:load('access').workspace});},
   revokeDevice(id){return rpc('revoke_device',{member_id:id});},
   backup(){return rpc('backup',{w:load('access').workspace});},
-  async push(id,state,meta,{background=false}={}){
+  async push(id,state,meta,{background=false,answersOnly=false}={}){
    const confirmed=new Set(meta.ack||[]),ids=new Set();
-   const pending=state.events.map(eventPayload).filter(e=>{if(ids.has(e.id)) throw new SyncError('重复答题 ID',{permanent:true});ids.add(e.id);return !confirmed.has(e.id);});
-   const payload=statePayload(state),serialized=JSON.stringify(payload);
+   const pending=[];
+   for(const event of state.events){
+    if(ids.has(event.id))throw new SyncError('重复答题 ID',{permanent:true});
+    ids.add(event.id);
+    if(!confirmed.has(event.id))pending.push(eventPayload(event));
+   }
    async function saveProgress(){
+    const payload=statePayload(state),serialized=JSON.stringify(payload);
     if(meta.lastState===serialized)return;
     const out=await rpc('save',{s:id,expected_revision:meta.revision||0,new_state:payload});
     if(out.conflict){
@@ -275,7 +285,13 @@ export function createCloudClient({storage,fetchImpl=fetch,locks=navigator.locks
     }
     meta.revision=out.revision;meta.lastState=serialized;save(metaField(id),meta);
    }
-   if(background)await saveProgress();
+   let conflict;
+   if(background&&!answersOnly){
+    try{await saveProgress();}catch(error){
+     if(!error.conflict)throw error;
+     conflict=error;
+    }
+   }
    const upload=background?pending.slice(-100):pending;
    for(let i=0;i<upload.length;i+=50){
     const batch=upload.slice(i,i+50);
@@ -284,6 +300,7 @@ export function createCloudClient({storage,fetchImpl=fetch,locks=navigator.locks
     ack.forEach(x=>confirmed.add(x));meta.ack=[...confirmed];save(metaField(id),meta);
    }
    if(!background)await saveProgress();
+   if(conflict)throw conflict;
    return background?{...meta,pendingCount:pending.length-upload.length}:meta;
   },
   meta(id){return load(metaField(id),{revision:0,ack:[]});},

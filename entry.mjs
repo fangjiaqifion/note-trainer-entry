@@ -1,6 +1,6 @@
-import {createCloudClient,randomCode} from './cloud_client.mjs?build=14046987a8';
-import {parseInvitation,teacherKey,username} from './portal_identity.mjs?build=14046987a8';
-import {portalConfig} from './portal_config.mjs?build=14046987a8';
+import {createCloudClient,randomCode} from './cloud_client.mjs?build=5525ddec9a';
+import {parseInvitation,teacherKey,username} from './portal_identity.mjs?build=5525ddec9a';
+import {portalConfig} from './portal_config.mjs?build=5525ddec9a';
 
 const status=document.querySelector('#status');
 const client=createCloudClient({storage:localStorage});

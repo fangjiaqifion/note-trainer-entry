@@ -6,6 +6,7 @@
   --surface: #fff;
   --line: #d9dfd4;
   --focus: #b18435;
+  --muted: #52645a;
   font: 17px -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
 * { box-sizing: border-box; }
@@ -17,19 +18,28 @@ form, .card { background: var(--surface); border: 1px solid var(--line); border-
 button, input, textarea, select { font: inherit; }
 button { background: var(--accent); color: white; border: 0; border-radius: 8px; min-height: 44px; padding: 10px 15px; cursor: pointer; }
 button:disabled { opacity: .55; cursor: wait; }
-:where(button, a, input, textarea, select):focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+:where(button, a, input, textarea, select, summary):focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 label { display: block; margin: 16px 0 8px; }
 input, textarea, select { display: block; width: 100%; min-height: 44px; margin-top: 8px; padding: 10px; border: 1px solid #aebbaa; border-radius: 7px; background: white; }
 textarea { min-height: 76px; }
 [hidden] { display: none !important; }
-.entry { max-width: 780px; margin: 38px auto; padding: 0 20px; }
+.entry { max-width: 820px; margin: 38px auto; padding: 0 20px; }
+.entry header { margin-bottom: 20px; }
 .entry-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+.entry-grid form { display: grid; grid-template-rows: auto 1fr auto; }
 .entry-grid h2 { margin: 0; }
-.entry-grid button { margin-top: 8px; }
-.entry-grid .learner, .entry-grid .issued { grid-column: 1 / -1; }
-.entry .admin-link { color: var(--accent); text-underline-offset: 4px; }
-.entry #status { margin: 16px 0; overflow-wrap: anywhere; }
-.entry #status:empty { margin: 0; height: 20px; }
+.entry form button, .entry .issued button { margin-top: 8px; }
+.entry form button { width: 100%; }
+.entry-grid .issued { grid-column: 1 / -1; }
+.entry-hint { color: var(--muted); font-size: 15px; line-height: 1.55; margin: 12px 0 0; }
+.entry-registration { margin-top: 16px; }
+.entry-registration summary { min-height: 44px; width: fit-content; padding: 10px 0; color: var(--accent); cursor: pointer; }
+.entry-registration form { max-width: 420px; margin-top: 8px; }
+.entry-registration .entry-hint { margin-top: 0; }
+.entry-footer { border-top: 1px solid var(--line); margin: 14px 0 0; }
+.entry-footer a { display: inline-flex; align-items: center; min-height: 44px; color: var(--muted); font-size: 14px; text-underline-offset: 4px; }
+.entry #status { margin: 0 0 16px; color: var(--muted); overflow-wrap: anywhere; }
+.entry #status:empty { display: none; }
 @media (max-width: 600px) {
   .entry { margin-top: 20px; padding: 0 12px; }
   .entry-grid { grid-template-columns: minmax(0,1fr); gap: 12px; }

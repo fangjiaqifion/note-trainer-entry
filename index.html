@@ -1,16 +1,21 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow,noarchive"><meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#f6f3ed">
 <title>Note Trainer · 云端授权</title>
-<link rel="stylesheet" href="./portal_style.css?v=0a5aa420f3">
-<script type="module" src="./entry.mjs?build=5525ddec9a"></script></head>
+<link rel="stylesheet" href="./portal_style.css?v=421621bae5">
+<script type="module" src="./entry.mjs?build=5525ddec9a&amp;rev=75fa79ad47"></script></head>
 <body><main class="entry">
-<header><h1>识谱小练习</h1><a class="admin-link" href="./manage.html">管理员登录</a></header>
-<p id="status" role="status" aria-live="polite"></p>
+<header><h1>识谱小练习</h1></header>
+<p id="status" role="status" aria-live="polite">正在加载登录…</p>
 <div class="entry-grid">
-<form id="login"><h2>教师登录</h2><label>用户名<input name="username" autocomplete="username" autocapitalize="none" required></label><label>教师密钥<input name="key" type="password" autocomplete="current-password" required></label><button>登录</button></form>
-<form id="register"><h2>教师注册</h2><label>邀请码<input name="invitation" type="password" autocomplete="off" required></label><label>用户名<input name="username" autocomplete="username" autocapitalize="none" required></label><button>注册</button></form>
 <section class="card issued" id="issued" hidden><h2>保存教师密钥</h2><p>换设备时需要它。</p><textarea id="key" readonly aria-label="教师密钥"></textarea><button id="continue">已保存，进入练习</button></section>
-<form id="learner" class="learner"><h2>学生激活或添加设备</h2><label>学生激活码或设备配对码<textarea name="packet" autocomplete="off" spellcheck="false" required></textarea></label><button>进入练习</button></form>
+<form id="login"><h2>教师登录</h2><div><label>用户名<input id="teacherUsername" autocomplete="username" autocapitalize="none" required></label><label>教师密钥<input id="teacherKeyInput" type="password" autocomplete="current-password" required></label></div><button disabled>登录</button></form>
+<form id="learner"><h2>学生激活或添加设备</h2><div><p class="entry-hint">首次使用请向老师领取激活码。添加设备时，请在原设备生成配对码。</p><label>激活码或配对码<textarea id="learnerCode" autocomplete="off" autocapitalize="none" spellcheck="false" required></textarea></label></div><button disabled>进入练习</button></form>
 </div>
+<details class="entry-registration">
+<summary>首次使用？教师注册</summary>
+<form id="register"><p class="entry-hint">请准备管理员发给您的邀请码。</p><label>邀请码<input id="invitationCode" type="password" autocomplete="off" required></label><label>用户名<input id="newTeacherUsername" autocomplete="username" autocapitalize="none" required></label><button disabled>注册</button></form>
+</details>
+<footer class="entry-footer"><a href="./manage.html">管理员登录</a></footer>
 </main></body></html>

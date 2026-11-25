@@ -12,16 +12,19 @@ let busy=false;
 async function action(work){
  if(busy)return;
  busy=true;
- for(const button of document.querySelectorAll('button'))button.disabled=true;
+ const buttons=document.querySelectorAll('button');
+ for(const button of buttons)button.disabled=true;
  try{status.textContent='正在验证云端授权…';await work();}
  catch(error){status.textContent=error.message||'暂时无法验证，请联网后重试。';}
- finally{busy=false;for(const button of document.querySelectorAll('button'))button.disabled=false;}
+ finally{busy=false;for(const button of buttons)button.disabled=false;}
 }
 
 function showKey(pending){
- document.querySelector('#key').value=teacherKey(pending.secret);
+ const key=document.querySelector('#key');
+ key.value=teacherKey(pending.secret);
  issued.hidden=false;
  status.textContent='教师账户已开通。';
+ key.focus();
 }
 
 async function launch({saveKey=false}={}){
@@ -41,22 +44,25 @@ async function launch({saveKey=false}={}){
 }
 
 function bind(id,handler){
- document.querySelector('#'+id).addEventListener('submit',event=>{
+ const form=document.getElementById(id);
+ form.addEventListener('submit',event=>{
   event.preventDefault();
-  const form=event.currentTarget;
-  action(()=>handler(new FormData(form)));
+  // Unnamed controls keep credentials out of native form submissions.
+  action(()=>handler(form.elements));
  });
+ form.querySelector('button').disabled=false;
 }
 
 bind('login',async fields=>{
  client.configure(portalConfig);
- const key=fields.get('key').trim();
+ const key=fields.namedItem('teacherKeyInput').value.trim();
  if(key.startsWith('nt1.'))await client.recover(key,null,'teacher');
- else await client.loginTeacher(fields.get('username'),key);
+ else await client.loginTeacher(fields.namedItem('teacherUsername').value,key);
  await launch();
 });
 bind('register',async fields=>{
- const invitation=parseInvitation(fields.get('invitation')),name=username(fields.get('username'));
+ const invitation=parseInvitation(fields.namedItem('invitationCode').value);
+ const name=username(fields.namedItem('newTeacherUsername').value);
  let pending=JSON.parse(localStorage.getItem(pendingKey)||'null');
  if(pending?.invitation!==invitation||pending.name!==name){
   pending={invitation,name,secret:randomCode()};
@@ -67,7 +73,7 @@ bind('register',async fields=>{
  showKey(pending);
 });
 bind('learner',async fields=>{
- await client.recover(fields.get('packet').trim(),null,'learner');
+ await client.recover(fields.namedItem('learnerCode').value.trim(),null,'learner');
  await launch();
 });
 document.querySelector('#continue').onclick=()=>action(()=>launch({saveKey:true}));
@@ -79,5 +85,6 @@ if('serviceWorker' in navigator && location.protocol==='https:'){
 
 const pending=JSON.parse(localStorage.getItem(pendingKey)||'null');
 const query=new URLSearchParams(location.search);
+status.textContent='';
 if(pending&&pending.name===client.access?.username)showKey(pending);
 else if(client.access&&!query.has('signed-out'))action(launch);

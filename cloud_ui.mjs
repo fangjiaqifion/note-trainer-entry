@@ -1,11 +1,12 @@
 const moduleBuild=new URL(import.meta.url).searchParams.get('build')||'dev';
-const {createCloudClient,decodeRecovery,canSyncAccount,canAutoEnroll,autoParticipant,identifyLegacyEvents,randomCode}=await import('./cloud_client.mjs?build='+moduleBuild);
+const {createCloudClient,decodeRecovery,canSyncAccount,canAutoEnroll,autoParticipant,identifyLegacyEvents,randomCode,reconcileProfile}=await import('./cloud_client.mjs?build='+moduleBuild);
 const {portalConfig}=await import('./portal_config.mjs?build='+moduleBuild);
 const {username,teacherKey,parseInvitation}=await import('./portal_identity.mjs?build='+moduleBuild);
 // The host owns game state; this module owns network state and the management dialog.
 export function mountCloudUI(host){
  if(moduleBuild!==document.querySelector('meta[name="app-build"]').content)throw Error('页面组件版本已变化，请刷新后继续');
- const client=createCloudClient({storage:localStorage});
+ const syncScope=document.querySelector('meta[name="nt-protected-runtime"]')?.content;
+ const client=createCloudClient({storage:localStorage,syncScope});
  let timer,active=false,paused=false,attempt=0,saveVersion=0,managing=false,disposed=false,releaseLock,hasLock=false;
  const dialog=document.createElement('div');dialog.className='modal';dialog.id='cloudModal';
  dialog.innerHTML=`<div class="sheet"><h2>云端账户</h2>
@@ -43,22 +44,29 @@ export function mountCloudUI(host){
  <button class="ghost-btn" id="cloudDownloadCode">另存为文件（可选）</button>
  <button class="secondary-btn" id="cloudSavedCode">我已妥善保存</button></section>
  <div id="cloudManagement" hidden>
+ <div id="cloudLearnerDevice" hidden>
+ <p class="hint">在新设备打开游戏，选择「学生激活或添加设备」，输入这里生成的配对码。</p>
+ <button class="secondary-btn" id="cloudPair">添加练习设备</button>
+ </div>
  <div id="cloudTeacher" hidden>
  <p class="hint">直接在学生总览新建学生即可。学生档案、进度和答案会自动同步；离线时先保存在本机。</p>
- <details id="cloudSafety"><summary>账户安全与备份</summary>
+ <details id="cloudSafety"><summary>高级设置</summary>
  <button class="secondary-btn" id="cloudTeacherCode">生成备用教师恢复码</button>
  <button class="secondary-btn" id="cloudResearchCode">生成研究者只读授权码</button>
  <button class="secondary-btn" id="cloudBackup">导出班级云端灾备</button>
  <button class="secondary-btn" id="cloudDevices">查看或撤销设备</button>
  <button class="secondary-btn" id="cloudCodes">查看或撤销授权</button><div id="cloudGrantList"></div>
+ <details id="cloudLegacyMigration" hidden><summary>从旧版迁移学生</summary>
+ <p class="hint">选择旧版的完整名册备份，加入尚未绑定的学生和练习记录。</p>
+ <input id="cloudLegacyFile" type="file" accept="application/json,.json" aria-label="旧版完整名册备份"></details>
  <details id="cloudLegacyBind"><summary>旧版档案兼容工具</summary>
  <label class="field"><span>选择本机学生</span><select id="cloudLocal"></select></label>
  <label class="field"><span>旧研究编号（可选的兼容流程）</span><input id="cloudParticipant" placeholder="例如 P001" maxlength="40"></label>
  <button class="secondary-btn" id="cloudBind">备份并绑定学生</button></details></details></div>
- <h3>学生记录</h3><button class="ghost-btn" id="cloudRefresh">刷新学生记录</button>
+ <section id="cloudRosterSection"><h3>学生记录</h3><button class="ghost-btn" id="cloudRefresh">刷新学生记录</button>
  <button class="secondary-btn" id="cloudRetry">立即同步 / 重试</button>
- <div id="cloudRoster"></div><div id="cloudReadReport"></div>
- <p class="hint">另一设备继续练习前，请先确认原设备已同步。进度冲突不会自动覆盖，请先备份本机记录。</p>
+ <div id="cloudRoster"></div><div id="cloudReadReport"></div></section>
+ <p class="hint" id="cloudLegacyConflict">另一设备继续练习前，请先确认原设备已同步。进度冲突不会自动覆盖，请先备份本机记录。</p>
  <button class="ghost-btn" id="cloudSwitch">登录 / 恢复其他账户</button></div>
  <div class="sheet-foot"><button class="secondary-btn" id="cloudClose">关闭</button></div></div>`;
  document.body.append(dialog);
@@ -69,8 +77,14 @@ export function mountCloudUI(host){
   for(const [name,tab] of [['login','cloudLoginTab'],['register','cloudRegisterTab'],['recover','cloudRecoveryTab']])$(tab).setAttribute('aria-pressed',String(mode===name));
  }
  $('cloudLoginTab').onclick=()=>entry('login');$('cloudRegisterTab').onclick=()=>entry('register');$('cloudRecoveryTab').onclick=()=>entry('recover');
- const protectedRuntime=!!document.querySelector('meta[name="nt-protected-runtime"]');
- if(protectedRuntime)$('cloudSwitch').style.display='none';
+ const protectedRuntime=!!syncScope;
+ if(protectedRuntime){
+  for(const id of ['cloudSwitch','cloudLegacyBind','cloudRefresh'])$(id).style.display='none';
+  $('cloudLegacyConflict').style.display='none';
+  $('cloudLegacyMigration').hidden=false;
+  $('cloudRetry').hidden=true;
+  $('cloudRetry').textContent='重试云端连接';
+ }
  $('cloudSwitch').onclick=()=>{
   if(active){status('正在同步，请稍后再切换账户。');return;}
   $('cloudManagement').hidden=true;$('cloudEntryTabs').hidden=false;$('cloudLocalPinBox').hidden=false;entry('login');
@@ -97,16 +111,24 @@ export function mountCloudUI(host){
   const connected=!!client.access;
   $('cloudManagement').hidden=!connected;$('cloudEntryTabs').hidden=connected;
   $('cloudIntro').textContent=connected?'已连接'+(client.access.username?'：'+client.access.username:'云端账户')+'。新建学生后自动同步。':'教师使用用户名和教师密钥登录。首次使用请先注册。';
-  $('cloudLocalPinBox').hidden=!connected&&host.isTeacher();$('cloudLocalPinBox').open=!connected&&!host.isTeacher();
+  $('cloudLocalPinBox').hidden=protectedRuntime||(!connected&&host.isTeacher());$('cloudLocalPinBox').open=!connected&&!host.isTeacher();
   if(connected){for(const id of ['cloudLoginPanel','cloudRegisterPanel','cloudRecoveryPanel'])$(id).hidden=true;}
   else entry('login');
   $('cloudTeacher').hidden=client.access?.role!=='teacher';
+  const learner=protectedRuntime&&client.access?.role==='learner';
+  $('cloudLearnerDevice').hidden=!learner;
+  const cloudTeacher=protectedRuntime&&client.access?.role==='teacher';
+  for(const element of $('cloudRosterSection').children){
+   if(element.id!=='cloudRetry')element.hidden=cloudTeacher;
+  }
+  $('cloudRosterSection').hidden=learner;
   $('cloudLocal').replaceChildren(...host.accounts().filter(a=>!a.cloudStudent).map(a=>{const o=document.createElement('option');o.value=a.id;o.textContent=a.name;return o;}));
  }
- function showIssued(value,title='保存恢复码'){$('cloudIssued').value=value;$('cloudIssuedTitle').textContent=title;$('cloudPacket').hidden=false;}
+ function showIssued(value,title='保存恢复码'){$('cloudIssuedHelp').textContent='请私下保存这段代码。';$('cloudIssued').value=value;$('cloudIssuedTitle').textContent=title;$('cloudPacket').hidden=false;}
  async function issue(role,student){
   host.requireLocalTeacher();const out=await client.issue(role,student);
   showIssued(role==='teacher'&&client.access?.username?teacherKey(decodeRecovery(out.packet).secret):out.packet,role==='learner'?'保存学生激活码':'保存恢复码');
+  if(protectedRuntime&&role==='learner')$('cloudIssuedHelp').textContent='复制这段激活码，发给这位学生。学生在游戏首页输入即可。';
   status(role==='learner'?'学生激活码已生成，请仅发给该学生。':'恢复码已生成，请复制并私下保存。');
  }
  async function roster(){
@@ -124,7 +146,7 @@ export function mountCloudUI(host){
     heading.textContent=student.code+'：'+events.length+' 题；首次正确率 '+(events.length?Math.round(100*first/events.length)+'%':'暂无数据');box.append(heading);
     const b=document.createElement('button');b.className='secondary-btn';b.textContent='导出去标识记录';b.onclick=()=>download('note-trainer_'+student.code+'.json',{schema_version:1,workspace_id:student.workspace_id,student_id:student.id,participant:student.code,events});box.append(b);
    });
-   if(client.access.role!=='researcher')button('载入本机 / 云端进度',async()=>{
+   if(!protectedRuntime&&client.access.role!=='researcher')button('载入本机 / 云端进度',async()=>{
     const pin=$('cloudLocalPin').value;if(!/^\d{4}$/.test(pin))throw Error('请先填写四位本地 PIN');
     const profile=await client.profile(student.id),events=await client.readEvents(student.id);
     if(!confirm('载入 '+student.code+' 的云端进度？本机当前名册将保留快照。请先同步或导出本机未上传的记录。'))return;
@@ -138,34 +160,109 @@ export function mountCloudUI(host){
   }
   status('当前云端角色：'+({teacher:'教师',learner:'学生',researcher:'研究者只读'}[client.access.role])+'；名册 '+students.length+' 人。');
  }
+ const profileRetries=new Map();
+ function delayProfile(id,error){
+  const tries=(profileRetries.get(id)?.tries||0)+1;
+  const delay=error.permanent?60000:Math.max(error.retryAfter||0,Math.min(60000,2000*2**Math.min(tries,5)));
+  profileRetries.set(id,{tries,until:Date.now()+delay});
+ }
+ function waiting(id){return (profileRetries.get(id)?.until||0)>Date.now();}
+ async function pullProfile(access,head){
+  const accounts=host.accounts();
+  const local=accounts.find(account=>account.cloudStudent===head.id);
+  if(!local&&head.local_id&&accounts.some(account=>account.id===head.local_id&&canAutoEnroll(access,account)))return 'unchanged';
+  const before=local&&host.readState(local.id);
+  const meta=client.meta(head.id);
+  const cursor=before?(meta.eventCursor||'0'):'0';
+  const stateChanged=!before||meta.revision!==head.revision||meta.lastState===undefined;
+  const historyChanged=cursor!==head.event_cursor;
+  if(!stateChanged&&!historyChanged)return 'unchanged';
+  if(local&&!host.canApplyCloudProfile(local.id))return stateChanged?'deferred':'unchanged';
+  const memory=local&&host.memoryToken(local.id);
+  const base=JSON.parse(meta.lastState||'{}');
+  const remote=stateChanged?await client.profile(head.id,head):{...head,state:base};
+  const page=historyChanged?await client.readEventPage(head.id,cursor,head.event_cursor):null;
+  if(!host.runtimeActive())return 'deferred';
+  const events=page?.events||[];
+  const profile=before?{...remote,state:reconcileProfile(base,before,remote.state,events)}:remote;
+  const applied=host.applyCloudProfile(profile,profile.state.events||events,local?.id,before,memory);
+  if(!applied)return 'deferred';
+  client.markPulled(head.id,{...remote,event_cursor:page?.cursor||head.event_cursor},events,before||remote.revision?remote.state:applied);
+  return 'applied';
+ }
+ async function refreshProfiles({rosterOnly=false}={}){
+  const access=client.access;
+  const deferred=new Set();
+  if(!access||!host.runtimeActive?.()||document.hidden||!navigator.onLine)return deferred;
+  const roster=await client.syncHeads();
+  if(!host.runtimeActive())return deferred;
+  host.updateCloudRoster(roster);
+  if(rosterOnly)return deferred;
+  const known=new Set(roster.map(row=>row.id));
+  for(const id of profileRetries.keys())if(!known.has(id)&&!host.accounts().some(account=>account.id===id))profileRetries.delete(id);
+  let changed=false;
+  for(const head of roster){
+   if(!host.runtimeActive())break;
+   if(!canSyncAccount(access,{cloudStudent:head.id,cloudWorkspace:head.workspace_id}))continue;
+   if(waiting(head.id)){deferred.add(head.id);continue;}
+   try{
+    const result=await pullProfile(access,head);
+    if(result==='deferred')deferred.add(head.id);
+    if(result==='applied')changed=true;
+   }catch(error){delayProfile(head.id,error);deferred.add(head.id);}
+  }
+  if(changed&&host.runtimeActive())host.refreshClassroom();
+  return deferred;
+ }
+ async function uploadAccount(account){
+  if(canAutoEnroll(client.access,account)){
+   const source=host.readState(account.id);
+   if(!source||!Array.isArray(source.events))throw Object.assign(Error('本机学生档案缺失，已停止同步'),{permanent:true});
+   const prepared={rosterToken:host.rosterToken(),original:JSON.stringify(source),memoryToken:host.memoryToken(account.id)};
+   const remote=await client.addStudent(account.id,await autoParticipant(account.id));
+   prepared.events=await identifyLegacyEvents(remote,source.events);
+   host.attachAuto(account.id,remote,client.access.workspace,prepared);
+   account=host.accounts().find(row=>row.id===account.id);
+  }
+  if(account.cloudUnavailable||!canSyncAccount(client.access,account))return 0;
+  const state=host.readState(account.id);
+  if(!state||!Array.isArray(state.events))throw Object.assign(Error('本机存档缺失，已停止同步'),{permanent:true});
+  if(client.access.role==='teacher'&&(!protectedRuntime||account.cloudAuto))await client.pushLabel(account.cloudStudent,account);
+  const receipt=await client.push(account.cloudStudent,state,client.meta(account.cloudStudent),{background:protectedRuntime});
+  return receipt.pendingCount||0;
+ }
  function schedule(ms=10000){if(disposed||paused||timer!=null)return;timer=setTimeout(()=>{timer=null;sync();},ms);}
  async function sync(){
-  if(active||paused||disposed||!client.access||client.access.role==='researcher')return;
+  if(active||paused||disposed||!client.access||client.access.role==='researcher'||(host.runtimeActive&&!host.runtimeActive()))return;
   // Credential changes and sync must not interleave on the shared client.
   if(managing){schedule();return;}
   if(!navigator.onLine){status('当前离线，答题仍保存在本机。联网后继续同步。');return;}
   active=true;const startedVersion=saveVersion;
   try{
    await writer();
-   for(let account of host.accounts()){
-    if(canAutoEnroll(client.access,account)){
-     const source=host.readState(account.id);if(!source||!Array.isArray(source.events))throw Object.assign(Error('本机学生档案缺失，已停止同步'),{permanent:true});
-     const prepared={rosterToken:host.rosterToken(),original:JSON.stringify(source),memoryToken:host.memoryToken(account.id)};
-     const remote=await client.addStudent(account.id,await autoParticipant(account.id));
-     prepared.events=await identifyLegacyEvents(remote,source.events);
-     host.attachAuto(account.id,remote,client.access.workspace,prepared);
-     account=host.accounts().find(a=>a.id===account.id);
+   const deferred=await refreshProfiles();
+   let pending=0;
+   for(const account of host.accounts()){
+    if(host.runtimeActive&&!host.runtimeActive())return;
+    const id=account.cloudStudent||account.id;
+    if(deferred.has(id)||waiting(id))continue;
+    try{
+     pending+=await uploadAccount(account);
+     profileRetries.delete(id);
+    }catch(error){
+     if(!protectedRuntime)throw error;
+     if(!error.conflict)delayProfile(id,error);
+     deferred.add(id);
     }
-    if(!canSyncAccount(client.access,account))continue;
-    const state=host.readState(account.id);if(!state || !Array.isArray(state.events))throw Object.assign(Error('本机存档缺失，已停止同步'),{permanent:true});
-    if(client.access.role==='teacher')await client.pushLabel(account.cloudStudent,account);
-    await client.push(account.cloudStudent,state,client.meta(account.cloudStudent));
    }
-   attempt=0;status('本机记录已同步；服务器确认后仍保留本机副本。');
+   attempt=0;
+   if(protectedRuntime)$('cloudRetry').hidden=true;
+   status(!protectedRuntime?'本机记录已同步；服务器确认后仍保留本机副本。':
+    profileRetries.size?'有记录等待重试，已保存在本机。':deferred.size?'正在合并设备上的进度…':pending?'练习明细正在补传…':'已保存');
   }catch(e){
-   if(e.permanent){paused=true;status(e.message+'；同步已暂停，本机副本保留。');}
+   if(e.permanent){paused=true;if(protectedRuntime)$('cloudRetry').hidden=false;status(e.message+'；同步已暂停，本机副本保留。');}
    else{status('同步未完成，本机副本保留，稍后重试。');schedule(Math.max(e.retryAfter||0,Math.min(60000,2000*2**Math.min(attempt++,5))*(0.8+Math.random()*0.4)));}
-  }finally{active=false;if(saveVersion!==startedVersion)schedule();}
+  }finally{active=false;if(saveVersion!==startedVersion||host.runtimeActive?.())schedule(host.runtimeActive?4000:10000);}
  }
  $('cloudClose').onclick=()=>dialog.classList.remove('open');
  $('cloudRegister').onclick=()=>action(async()=>{
@@ -198,6 +295,21 @@ export function mountCloudUI(host){
   const access=await client.recover(packet);host.authorizeManagement(access.role,$('cloudLocalPin').value);$('cloudRecovery').value='';paused=false;await roster();schedule();
  });
  $('cloudCreate').onclick=()=>action(async()=>{host.requireLocalTeacher();await writer();await client.create($('cloudBootstrap').value.trim());$('cloudBootstrap').value='';await roster();await issue('teacher');});
+ $('cloudLegacyFile').onchange=()=>action(async()=>{
+  const file=$('cloudLegacyFile').files[0];
+  $('cloudLegacyFile').value='';
+  if(!file)return;
+  const imported=await host.importLegacyRoster(file);
+  status(imported?'已加入 '+imported+' 位学生，正在保存到云端。':'没有添加学生。');
+ });
+ $('cloudPair').onclick=()=>action(async()=>{
+  const packet=await client.transferDevice();
+  showIssued(packet,'练习设备配对码');
+  $('cloudIssuedHelp').textContent='请在新设备输入此码。有效期最多 10 分钟，只能添加一台设备。';
+  $('cloudDownloadCode').hidden=true;
+  $('cloudSavedCode').textContent='完成';
+  status('配对码已生成');
+ });
  $('cloudTeacherCode').onclick=()=>action(()=>issue('teacher'));
  $('cloudResearchCode').onclick=()=>action(()=>issue('researcher'));
  $('cloudDownloadCode').onclick=()=>{download('note-trainer_recovery.json',{username:client.access?.username,recovery:$('cloudIssued').value});};
@@ -233,12 +345,25 @@ export function mountCloudUI(host){
  });
  $('cloudRefresh').onclick=()=>action(roster);
  $('cloudRetry').onclick=()=>{paused=false;clearTimeout(timer);timer=null;sync();};
- const onSave=()=>{saveVersion++;schedule();},onRoster=()=>{saveVersion++;if(client.access?.role==='teacher'){clearTimeout(timer);timer=null;schedule(0);}},onOnline=()=>{if(!paused){clearTimeout(timer);timer=null;schedule(0);}};
+ const onSave=()=>{saveVersion++;schedule(protectedRuntime?1500:10000);},onRoster=()=>{saveVersion++;if(client.access?.role==='teacher'){clearTimeout(timer);timer=null;schedule(0);}},onOnline=()=>{if(!paused){clearTimeout(timer);timer=null;schedule(0);}};
  window.addEventListener('nt-local-saved',onSave);window.addEventListener('online',onOnline);
  window.addEventListener('nt-roster-saved',onRoster);
+ async function openStudentCode(student){
+  if(!protectedRuntime||!host.runtimeActive()||client.access?.role!=='teacher')return;
+  dialog.classList.add('open');
+  showAccess();
+  $('cloudManagement').hidden=true;
+  $('cloudPacket').hidden=true;
+  $('cloudIssued').value='';
+  await action(()=>issue('learner',student));
+ }
  async function open(){
   if(client.access?.role!=='learner' && client.access && !host.isTeacher()){host.notify('请先从老师入口验证本机 PIN，再打开云端管理');return;}
-  dialog.classList.add('open');showAccess();if(client.access)await action(roster);
+  dialog.classList.add('open');
+  $('cloudPacket').hidden=true;
+  $('cloudIssued').value='';
+  showAccess();
+  if(client.access&&!protectedRuntime)await action(roster);
   const pending=JSON.parse(localStorage.getItem('nt.cloud.registrationPending')||'null');
   if(pending&&pending.name===client.access?.username)showIssued(teacherKey(pending.secret),'保存教师密钥 · '+pending.name);
  }
@@ -249,5 +374,5 @@ export function mountCloudUI(host){
   try{host.enableCloudDefault(client.access.workspace);schedule(0);}catch(error){status(error.message);}
  }
  const ready=client.access&&client.access.role!=='researcher'?writer().then(()=>{status('云端自动同步已开启。离线时先保存在本机。');teacherReady();schedule(0);}):Promise.resolve();
- return {open,ready,client,teacherReady,dispose(){disposed=true;clearTimeout(timer);releaseLock?.();window.removeEventListener('nt-local-saved',onSave);window.removeEventListener('nt-roster-saved',onRoster);window.removeEventListener('online',onOnline);}};
+ return {open,openStudentCode,ready,client,teacherReady,refreshProfiles,requestSync:()=>schedule(0),dispose(){disposed=true;clearTimeout(timer);releaseLock?.();window.removeEventListener('nt-local-saved',onSave);window.removeEventListener('nt-roster-saved',onRoster);window.removeEventListener('online',onOnline);}};
 }

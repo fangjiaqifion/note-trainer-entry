@@ -1,8 +1,8 @@
-import {portalConfig} from './portal_config.mjs?build=4fd09d5452';
-import {invitationKey} from './portal_identity.mjs?build=4fd09d5452';
+import {portalConfig} from './portal_config.mjs?build=14046987a8';
+import {invitationKey} from './portal_identity.mjs?build=14046987a8';
 // Admin tokens and plaintext invitations stay in memory, separate from game storage.
 let session=null,factor=null,data={invites:[],teachers:[]},editing=null,selected=null,filterInvite=null,pending=null,busy=false;
-let classEntitlements=null;
+let classEntitlements=null,backgroundRead=false,actionVersion=0;
 const $=id=>document.getElementById(id),status=text=>{$('status').textContent=text;};
 async function request(path,body,method='POST'){
  const response=await fetch(portalConfig.url+path,{method,headers:{apikey:portalConfig.publishableKey,'content-type':'application/json',...(session?{authorization:'Bearer '+session.access_token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)}),cache:'no-store',signal:AbortSignal.timeout(15000)});
@@ -11,7 +11,7 @@ async function request(path,body,method='POST'){
 }
 const rpc=(name,body={})=>request('/rest/v1/rpc/nt_portal_admin_'+name,body);
 const classRpc=(name,body={})=>request('/rest/v1/rpc/nt_class_'+name,body);
-async function action(fn){if(busy)return;busy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){status(e.message||'连接未完成，请重试');}finally{busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
+async function action(fn){if(busy)return;busy=true;actionVersion++;document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){status(e.message||'连接未完成，请重试');}finally{busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
 function tab(which){for(const name of ['invites','teachers']){$(name+'Panel').hidden=name!==which;$(name+'Tab').setAttribute('aria-pressed',String(name===which));$(name+'Tab').classList.toggle('secondary',name!==which);}}
 function button(text,fn){const b=document.createElement('button');b.type='button';b.className='secondary';b.textContent=text;b.onclick=()=>action(fn);return b;}
 function table(target,headers,rows){const t=document.createElement('table'),head=t.createTHead().insertRow();for(const text of headers){const th=document.createElement('th');th.scope='col';th.textContent=text;head.append(th);}const body=t.createTBody();for(const cells of rows){const r=body.insertRow();for(const value of cells){const td=r.insertCell();if(value instanceof Node)td.append(value);else td.textContent=String(value??'—');}}if(!rows.length){const td=body.insertRow().insertCell();td.colSpan=headers.length;td.textContent='暂无记录';}$(target).replaceChildren(t);}
@@ -46,21 +46,54 @@ function renderTeachers(){
  table('teacherTable',['用户名','备注','状态','最近登录','操作'],data.teachers.filter(t=>(!filterInvite||t.invite_id===filterInvite)&&(t.username+' '+t.note).toLowerCase().includes(q)).map(t=>[t.username,t.note,t.enabled?'正常':'已停用',date(t.last_login),button('查看',()=>detail(t))]));
 }
 function localDate(value){const d=new Date(value);return new Date(d-d.getTimezoneOffset()*60000).toISOString().slice(0,16);}
-async function refresh(){
- data=await rpc('list');
- try{classEntitlements=new Map((await classRpc('admin_list')).map(entry=>[entry.invite_id,entry]));}
- catch(error){if(error.status!==404)throw error;classEntitlements=null;}
- render();status('已更新管理数据。');
+async function readManagement(){
+ const next=await rpc('list');
+ let entitlements;
+ try{entitlements=await classRpc('admin_list');}
+ catch(error){if(error.status!==404)throw error;entitlements=null;}
+ return {next,entitlements};
 }
+function applyManagement({next,entitlements}){
+ const changed=JSON.stringify(next)!==JSON.stringify(data)||
+  JSON.stringify(entitlements)!==JSON.stringify(classEntitlements?[...classEntitlements.values()]:null);
+ data=next;
+ classEntitlements=entitlements&&new Map(entitlements.map(entry=>[entry.invite_id,entry]));
+ if(changed)render();
+ return changed;
+}
+async function refresh(){
+ if(!applyManagement(await readManagement()))render();
+ status('已更新管理数据。');
+}
+function renderClassRoster(roster){
+ table('classRoster',['学生','编号','设备授权'],roster.map(s=>[s.display_name,s.code,s.active?'已激活':'无有效设备']));
+ $('classRosterPanel').hidden=false;
+}
+async function checkForUpdates(){
+ if(backgroundRead||busy||!session||$('dashboard').hidden||document.hidden||!navigator.onLine)return;
+ backgroundRead=true;
+ const version=actionVersion,activeSession=session,teacher=selected;
+ const current=()=>version===actionVersion&&session===activeSession&&!document.hidden;
+ try{
+  const snapshot=await readManagement();
+  if(!current())return;
+  applyManagement(snapshot);
+  if(teacher&&classEntitlements){
+   const roster=await classRpc('admin_roster',{w:teacher.workspace_id});
+   if(current()&&selected?.id===teacher.id)renderClassRoster(roster);
+  }
+ }catch(error){
+  if(current())status(error.status===401||error.status===403?error.message:'暂时无法更新，将自动重试。');
+ }finally{backgroundRead=false;}
+}
+setInterval(checkForUpdates,5000);
+document.addEventListener('visibilitychange',checkForUpdates);
+window.addEventListener('online',checkForUpdates);
 async function detail(t){
  $('classRosterPanel').hidden=true;$('classRoster').replaceChildren();
  selected=t;$('teacherDetail').hidden=false;$('teacherTitle').textContent=t.username;$('teacherNote').value=t.note;$('toggleTeacher').textContent=t.enabled?'停用账户':'恢复账户';
  $('teacherInfo').textContent='注册：'+date(t.created_at)+'；邀请码备注：'+(data.invites.find(i=>i.id===t.invite_id)?.note||'未备注');
- if(classEntitlements){
-  const roster=await classRpc('admin_roster',{w:t.workspace_id});
-  table('classRoster',['学生','编号','设备授权'],roster.map(s=>[s.display_name,s.code,s.active?'已激活':'无有效设备']));
-  $('classRosterPanel').hidden=false;
- }
+ if(classEntitlements)renderClassRoster(await classRpc('admin_roster',{w:t.workspace_id}));
  const devices=await rpc('devices',{teacher_id:t.id});$('devices').replaceChildren();
  for(const d of devices){const row=document.createElement('p');row.textContent=d.role+' · '+d.id.slice(0,8)+' · '+(d.revoked?'已撤销':'有效')+' ';if(!d.revoked)row.append(button('撤销设备',async()=>{if(!confirm('撤销这台设备的云端访问？有效教师密钥仍可重新登录。'))return;await rpc('revoke_device',{member_id:d.id});await detail(selected);status('设备云端授权已撤销。');}));$('devices').append(row);}
 }

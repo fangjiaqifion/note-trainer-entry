@@ -15,6 +15,47 @@ export function eventPayload(event){
  if(!UUID.test(event?.id)) throw new SyncError('答题记录缺少稳定 ID，请先完成迁移',{permanent:true});
  return Object.fromEntries(EVENT_FIELDS.filter(k=>event[k]!==undefined).map(k=>[k,event[k]]));
 }
+function canonical(value){
+ if(Array.isArray(value))return value.map(canonical);
+ if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])]));
+ return value;
+}
+function sameValue(a,b){return JSON.stringify(canonical(a))===JSON.stringify(canonical(b));}
+function maximumByKey(local={},remote={}){
+ return Object.fromEntries([...new Set([...Object.keys(local),...Object.keys(remote)])]
+  .map(key=>[key,Math.max(local[key]||0,remote[key]||0)]));
+}
+export function reconcileProfile(base,local,remote,remoteEvents){
+ const state=statePayload(remote);
+ for(const key of STATE_FIELDS){
+  if(local[key]!==undefined&&(sameValue(remote[key],base[key])||remote[key]===undefined)){
+   state[key]=local[key];
+  }
+ }
+ if(Array.isArray(base.selected)&&Array.isArray(local.selected)&&Array.isArray(remote.selected)){
+  const original=new Set(base.selected),left=new Set(local.selected),right=new Set(remote.selected);
+  state.selected=[...new Set([...right,...left])].filter(note=>
+   original.has(note)?left.has(note)&&right.has(note):left.has(note)||right.has(note));
+ }
+ state.stars=maximumByKey(local.stars,remote.stars);
+ state.lastSeen=maximumByKey(local.lastSeen,remote.lastSeen);
+ state.progress=Object.fromEntries([...new Set([...Object.keys(local.progress||{}),...Object.keys(remote.progress||{})])]
+  .map(note=>[note,maximumByKey(local.progress?.[note],remote.progress?.[note])]));
+ if(local.spot?.note===remote.spot?.note&&local.spot?.step>remote.spot?.step)state.spot=local.spot;
+ if(state.spot&&state.progress[state.spot.note]?.fin)state.spot=null;
+ const events=new Map();
+ for(const event of [...remoteEvents,...local.events]){
+  const payload=eventPayload(event);
+  if(events.has(payload.id)&&!sameValue(events.get(payload.id),payload)){
+   throw new SyncError('同一答题 ID 内容冲突，已保留本机记录',{permanent:true});
+  }
+  events.set(payload.id,payload);
+ }
+ state.events=[...events.values()].sort((a,b)=>a.t-b.t||a.id.localeCompare(b.id));
+ state.eventSeq=Math.max(local.eventSeq||0,remote.eventSeq||0,state.events.length);
+ state.practiceSeq=Math.max(local.practiceSeq||0,remote.practiceSeq||0,state.events.filter(event=>event.mode!=='test').length);
+ return state;
+}
 export function canSyncAccount(access,account){
  return !!(account.cloudStudent && account.cloudWorkspace===access?.workspace &&
   (access.role==='teacher' || (access.role==='learner' && access.student===account.cloudStudent)));
@@ -55,7 +96,8 @@ export function decodeRecovery(text){
  if(!/^[a-f0-9]{64}$/.test(value.secret)) throw Error('恢复码格式不正确');
  return {config:publicConfig(value.config),secret:value.secret};
 }
-export function createCloudClient({storage,fetchImpl=fetch,locks=navigator.locks}){
+export function createCloudClient({storage,fetchImpl=fetch,locks=navigator.locks,syncScope=null}){
+ const metaField=id=>syncScope?'meta.'+syncScope+'.'+id:'meta.'+id;
  const load=(key,fallback=null)=>{const raw=storage.getItem(KEY+key);return raw===null?fallback:JSON.parse(raw);};
  const save=(key,value)=>storage.setItem(KEY+key,JSON.stringify(value));
  let config=load('config'),transport,sessionKey=load('authKey',KEY+'auth');
@@ -121,7 +163,18 @@ export function createCloudClient({storage,fetchImpl=fetch,locks=navigator.locks
   const names=new Map(labels.map(l=>[l.student_id,l]));
   return rows.map(s=>({...s,...(names.get(s.id)||{})}));
  }
- async function profile(id){
+ async function syncHeads(){
+  const access=load('access');
+  return request('/rest/v1/rpc/nt_class_sync_heads',{method:'POST',
+   body:{w:access.workspace,student:access.student,access_role:access.role}});
+ }
+ async function profile(id,head){
+  if(head){
+   if(!UUID.test(id))throw Error('学生 ID 无效');
+   const rows=await request('/rest/v1/nt_cloud_students?select=state,revision&id=eq.'+id);
+   if(rows.length!==1)throw Error('学生档案暂不可读');
+   return {...head,...rows[0]};
+  }
   if(!UUID.test(id))throw Error('学生 ID 无效');const rows=await request('/rest/v1/nt_cloud_students?select=*&id=eq.'+id);
   if(rows.length!==1)throw new SyncError('学生未授权或已撤销',{permanent:true});
   if(load('access').role==='researcher')return rows[0];
@@ -129,17 +182,31 @@ export function createCloudClient({storage,fetchImpl=fetch,locks=navigator.locks
   if(!Array.isArray(labels))throw Error('云端学生信息格式不正确');
   return {...rows[0],...(labels.find(l=>l.student_id===id)||{})};
  }
+ async function readEventPage(id,after='0',through){
+  if(!UUID.test(id)||!/^\d+$/.test(after)||(through!==undefined&&!/^\d+$/.test(through)))throw Error('学生 ID 或答题游标无效');
+  if(through!==undefined&&BigInt(after)>=BigInt(through))return {events:[],cursor:after,more:false};
+  const limit=through===undefined?'':'&cursor=lte.'+through;
+  const rows=await request('/rest/v1/nt_cloud_events?select=cursor::text,event_id,payload&student_id=eq.'+id+'&cursor=gt.'+after+limit+'&order=cursor&limit=500');
+  let cursor=after;
+  const events=rows.map(row=>{
+   if(BigInt(row.cursor)<=BigInt(cursor)||!UUID.test(row.event_id))throw Error('云端记录游标无效');
+   cursor=String(row.cursor);
+   return {...row.payload,id:row.event_id};
+  });
+  return {events,cursor,more:rows.length===500&&(through===undefined||BigInt(cursor)<BigInt(through))};
+ }
  async function readEvents(id){
-  if(!UUID.test(id)) throw Error('学生 ID 无效');
-  const result=[];let cursor='0';
-  for(;;){
-   const rows=await request('/rest/v1/nt_cloud_events?select=cursor,event_id,payload&student_id=eq.'+id+'&cursor=gt.'+cursor+'&order=cursor&limit=500');
-   for(const row of rows){if(BigInt(row.cursor)<=BigInt(cursor) || !UUID.test(row.event_id)) throw Error('云端记录游标无效');cursor=String(row.cursor);result.push({...row.payload,id:row.event_id});}
-   if(rows.length<500) return result;
-  }
+  const result=[];
+  let cursor='0',more;
+  do{
+   const page=await readEventPage(id,cursor);
+   result.push(...page.events);
+   ({cursor,more}=page);
+  }while(more);
+  return result;
  }
  return {
-  configure,get access(){return load('access');},get config(){return config;},rpc,recover,issue,students,profile,readEvents,
+  configure,get access(){return load('access');},get config(){return config;},rpc,recover,issue,students,syncHeads,profile,readEventPage,readEvents,
   async registerTeacher(invitation,name,secret){
    name=username(name);
    if(!/^[a-f0-9]{48}$/.test(invitation)||!/^[a-f0-9]{64}$/.test(secret))throw Error('注册信息格式不正确');
@@ -167,6 +234,14 @@ export function createCloudClient({storage,fetchImpl=fetch,locks=navigator.locks
    if(result!==true)throw new SyncError('当前账户未获授权，请重新登录。',{permanent:true});
    return true;
   },
+  async transferDevice(){
+   const access=load('access');
+   if(access?.role!=='learner'||!access.student)throw Error('请先在已授权的学生设备上操作');
+   const secret=randomCode();
+   await request('/rest/v1/rpc/nt_class_transfer_device',{method:'POST',
+    body:{w:access.workspace,s:access.student,code_hash:await codeHash(secret)}});
+   return encodeRecovery(config,secret);
+  },
   leaveRuntime(){
    storage.removeItem(KEY+'access');
    if(sessionKey===KEY+'adminSession')globalThis.sessionStorage?.removeItem(sessionKey);
@@ -176,33 +251,48 @@ export function createCloudClient({storage,fetchImpl=fetch,locks=navigator.locks
   async create(bootstrap){const workspace=await rpc('create',{bootstrap_code:bootstrap});const access={workspace,role:'teacher',student:null};save('access',access);return access;},
   async addStudent(local,code){return rpc('add_student',{w:load('access').workspace,local_key:local,participant_code:code});},
   async pushLabel(id,account){
-   const meta=load('meta.'+id,{revision:0,ack:[]}),label=JSON.stringify([account.name,account.color||'#3C7DD9']);
+   const meta=load(metaField(id),{revision:0,ack:[]}),label=JSON.stringify([account.name,account.color||'#3C7DD9']);
    if(meta.label===label)return;
    await rpc('label',{s:id,display_name:account.name,color:account.color||'#3C7DD9'});
    // Merge after the request to preserve receipts saved by another completed operation.
-   const latest=load('meta.'+id,{revision:0,ack:[]});latest.label=label;save('meta.'+id,latest);
+   const latest=load(metaField(id),{revision:0,ack:[]});latest.label=label;save(metaField(id),latest);
   },
   codes(){return rpc('codes',{w:load('access').workspace});},
   revoke(id){return rpc('revoke',{code_id:id});},
   devices(){return rpc('devices',{w:load('access').workspace});},
   revokeDevice(id){return rpc('revoke_device',{member_id:id});},
   backup(){return rpc('backup',{w:load('access').workspace});},
-  async push(id,state,meta){
+  async push(id,state,meta,{background=false}={}){
    const confirmed=new Set(meta.ack||[]),ids=new Set();
    const pending=state.events.map(eventPayload).filter(e=>{if(ids.has(e.id)) throw new SyncError('重复答题 ID',{permanent:true});ids.add(e.id);return !confirmed.has(e.id);});
-   for(let i=0;i<pending.length;i+=50){
-    const batch=pending.slice(i,i+50);
-    const ack=await rpc('batch',{s:id,items:batch.map(e=>({id:e.id,payload:e}))});
-    if(!Array.isArray(ack)||new Set(ack).size!==batch.length||batch.some(e=>!ack.includes(e.id))) throw Error('云端回执不完整');
-    ack.forEach(x=>confirmed.add(x));meta.ack=[...confirmed];save('meta.'+id,meta);
-   }
    const payload=statePayload(state),serialized=JSON.stringify(payload);
-   if(meta.lastState===serialized) return meta;
-   const out=await rpc('save',{s:id,expected_revision:meta.revision||0,new_state:payload});
-   if(out.conflict){const error=new SyncError('另一设备已更新进度。答题记录已同步；请先备份，再载入云端进度。',{permanent:true});error.conflict=out;throw error;}
-   meta.revision=out.revision;meta.lastState=serialized;save('meta.'+id,meta);return meta;
+   async function saveProgress(){
+    if(meta.lastState===serialized)return;
+    const out=await rpc('save',{s:id,expected_revision:meta.revision||0,new_state:payload});
+    if(out.conflict){
+     const message=background?'另一设备已更新进度':'另一设备已更新进度。答题记录已同步；请先备份，再载入云端进度。';
+     const error=new SyncError(message,{permanent:!background});error.conflict=out;throw error;
+    }
+    meta.revision=out.revision;meta.lastState=serialized;save(metaField(id),meta);
+   }
+   if(background)await saveProgress();
+   const upload=background?pending.slice(-100):pending;
+   for(let i=0;i<upload.length;i+=50){
+    const batch=upload.slice(i,i+50);
+    const ack=await rpc('batch',{s:id,items:batch.map(e=>({id:e.id,payload:e}))});
+    if(!Array.isArray(ack)||new Set(ack).size!==batch.length||batch.some(e=>!ack.includes(e.id)))throw Error('云端回执不完整');
+    ack.forEach(x=>confirmed.add(x));meta.ack=[...confirmed];save(metaField(id),meta);
+   }
+   if(!background)await saveProgress();
+   return background?{...meta,pendingCount:pending.length-upload.length}:meta;
   },
-  meta(id){return load('meta.'+id,{revision:0,ack:[]});},
-  markPulled(id,profile,events){const meta={revision:profile.revision,ack:events.map(e=>e.id),lastState:JSON.stringify(profile.state)};save('meta.'+id,meta);return meta;}
+  meta(id){return load(metaField(id),{revision:0,ack:[]});},
+  markPulled(id,profile,events,state=profile.state){
+   const prior=load(metaField(id),{});
+   const ack=profile.event_cursor===undefined?[]:prior.ack||[];
+   const meta={...prior,revision:profile.revision,ack:[...new Set([...ack,...events.map(e=>e.id)])],
+    lastState:JSON.stringify(statePayload(state)),eventCursor:profile.event_cursor};
+   save(metaField(id),meta);return meta;
+  }
  };
 }
